@@ -1,5 +1,7 @@
 # oarsman
 
+![](./logo.webp)
+
 a program like `postman` but for people who swim in the command line
 
 currently this is a quick and dirty curl command generator + runner that targets OpenAPI services that accept json payloads via POST.
