@@ -116,6 +116,11 @@ func main() {
 					continue
 				}
 
+				// only handle POST requests for now
+				if method != "POST" {
+					continue
+				}
+
 				pathAndPathItem := PathAndPathItem{
 					Path:     path,
 					Method:   method,
@@ -129,9 +134,7 @@ func main() {
 	selectedIndex := fuzzyFind(options)
 	pathAndPathItem := options[selectedIndex]
 	// WARN: this really only works for POST due to the curl construction
-	if pathAndPathItem.GetRequestBody() != nil {
-		getRequestBody(remoteHostOrigin, &pathAndPathItem)
-	}
+	sendUserRequest(remoteHostOrigin, &pathAndPathItem)
 }
 
 func fuzzyFind(pathAndPathItem []PathAndPathItem) int {
@@ -176,149 +179,157 @@ func reflowJsonString(jsonString string) string {
 	return asJsonString(&jsonObject)
 }
 
-func getRequestBody(remoteHostOrigin string, pathAndPathItem *PathAndPathItem) {
-	// Assuming 'application/json' content type for simplicity
-	requestBody := pathAndPathItem.GetRequestBody()
-	if requestBody == nil {
-		fmt.Println("The selected operation does not have a request body.")
-		return
+func runCurlCommand(remoteHostOrigin string, pathAndPathItem *PathAndPathItem, requestBodyData interface{}) {
+	var curlHost string
+	if remoteHostOrigin == "" {
+		curlHost = "$TARGET"
+	} else {
+		curlHost = remoteHostOrigin
 	}
 
-	mediaType := requestBody.Value.Content.Get("application/json")
-	if mediaType == nil {
-		fmt.Println("The selected operation does not support 'application/json'.")
+	jsonString, err := json.Marshal(requestBodyData)
+	if err != nil {
+		fmt.Println("Error marshalling JSON")
 		return
 	}
+	curlCommand := fmt.Sprintf(
+		"curl -v -X %s %s%s -H 'Content-Type: application/json' -d '%s'",
+		pathAndPathItem.Method,
+		curlHost,
+		pathAndPathItem.Path,
+		jsonString,
+	)
+	fmt.Println(color.CyanString(curlCommand))
 
-	schema := mediaType.Schema.Value
-	properties := schema.Properties
+	if remoteHostOrigin != "" {
+		cmd := exec.Command("sh", "-c", curlCommand)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			fmt.Println("Error running curl command:", err)
+		}
+	}
+}
 
-	app := tview.NewApplication()
-	form := tview.NewForm()
+func sendUserRequest(remoteHostOrigin string, pathAndPathItem *PathAndPathItem) {
+
+	if pathAndPathItem.Method != "POST" {
+		fmt.Println("Only POST requests are supported now.")
+		return
+	}
 
 	// Map to store form input values
 	requestBodyData := make(map[string]interface{})
-
-	// iterate over the properties and collect them into fields
-	for propName, propSchemaRef := range properties {
-		propSchema := propSchemaRef.Value
-
-		if propSchema.Type == "string" || propSchema.Type == "integer" || propSchema.Type == "number" || propSchema.Type == "boolean" {
-
-			var acceptanceFunc func(text string, ch rune) bool
-			switch propSchema.Type {
-			case "string":
-				acceptanceFunc = nil
-			case "boolean":
-				acceptanceFunc = func(text string, lastChar rune) bool {
-					return text == "true" || text == "false"
-				}
-			case "integer":
-				acceptanceFunc = tview.InputFieldInteger
-			case "number":
-				acceptanceFunc = tview.InputFieldFloat
-			}
-			// primitive type
-			form.AddInputField(
-				fmt.Sprintf("%s (%s)\n", propName, propSchema.Type),
-				"",
-				0,
-				acceptanceFunc,
-				(func(propName string) func(string) {
-					return func(text string) {
-						var err error
-						if propSchema.Type == "boolean" {
-							requestBodyData[propName] = text == "true"
-						} else if propSchema.Type == "integer" {
-							requestBodyData[propName], err = strconv.ParseInt(text, 10, 64)
-							bailOnError(err)
-						} else if propSchema.Type == "number" {
-							requestBodyData[propName], err = strconv.ParseFloat(text, 64)
-							bailOnError(err)
-						} else {
-							requestBodyData[propName] = text
-						}
-					}
-				})(propName),
-			)
-		} else {
-			// compound type
-			jsonBytes, err := propSchema.MarshalJSON()
-			bailOnError(err)
-			reflowedJsonString := reflowJsonString(string(jsonBytes))
-			numLines := strings.Count(reflowedJsonString, "\n") + 1
-			form.AddTextView(
-				fmt.Sprintf("%s (%s)\n", propName, propSchema.Type),
-				reflowedJsonString,
-				0, numLines, true, true)
-			form.AddTextArea(
-				"",
-				"",
-				0,
-				0,
-				0,
-				(func(propName string) func(text string) {
-					return func(text string) {
-						requestBodyData[propName] = text
-					}
-				})(propName),
-			)
-		}
-
-	}
-
-	form.AddButton("Save", func() {
-		app.Stop()
-
-		// postprocessing: coerce compound values
-		for propName, propSchemaRef := range properties {
-			propSchema := propSchemaRef.Value
-			if propSchema.Type == "object" || propSchema.Type == "array" {
-				requestBodyData[propName] = parseJson(requestBodyData[propName].(string))
-			}
-		}
-
-		var curlHost string
-		if remoteHostOrigin == "" {
-			curlHost = "$TARGET"
-		} else {
-			curlHost = remoteHostOrigin
-		}
-
-		jsonString, err := json.Marshal(requestBodyData)
-		if err != nil {
-			fmt.Println("Error marshalling JSON")
+	// Assuming 'application/json' content type for simplicity
+	requestBody := pathAndPathItem.GetRequestBody()
+	if requestBody == nil {
+		fmt.Println("NOTE: The selected operation does not have a request body.")
+		runCurlCommand(remoteHostOrigin, pathAndPathItem, requestBodyData)
+	} else {
+		mediaType := requestBody.Value.Content.Get("application/json")
+		if mediaType == nil {
+			fmt.Println("The selected operation does not support 'application/json'.")
 			return
 		}
-		curlCommand := fmt.Sprintf(
-			"curl -v -X %s %s%s -H 'Content-Type: application/json' -d '%s'",
-			pathAndPathItem.Method,
-			curlHost,
-			pathAndPathItem.Path,
-			jsonString,
-		)
-		fmt.Println(color.CyanString(curlCommand))
 
-		if remoteHostOrigin != "" {
-			cmd := exec.Command("sh", "-c", curlCommand)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			err = cmd.Run()
-			if err != nil {
-				fmt.Println("Error running curl command:", err)
+		schema := mediaType.Schema.Value
+		properties := schema.Properties
+
+		app := tview.NewApplication()
+		form := tview.NewForm()
+
+		// iterate over the properties and collect them into fields
+		for propName, propSchemaRef := range properties {
+			propSchema := propSchemaRef.Value
+
+			if propSchema.Type == "string" || propSchema.Type == "integer" || propSchema.Type == "number" || propSchema.Type == "boolean" {
+
+				var acceptanceFunc func(text string, ch rune) bool
+				switch propSchema.Type {
+				case "string":
+					acceptanceFunc = nil
+				case "boolean":
+					acceptanceFunc = func(text string, lastChar rune) bool {
+						return text == "true" || text == "false"
+					}
+				case "integer":
+					acceptanceFunc = tview.InputFieldInteger
+				case "number":
+					acceptanceFunc = tview.InputFieldFloat
+				}
+				// primitive type
+				form.AddInputField(
+					fmt.Sprintf("%s (%s)\n", propName, propSchema.Type),
+					"",
+					0,
+					acceptanceFunc,
+					(func(propName string) func(string) {
+						return func(text string) {
+							var err error
+							if propSchema.Type == "boolean" {
+								requestBodyData[propName] = text == "true"
+							} else if propSchema.Type == "integer" {
+								requestBodyData[propName], err = strconv.ParseInt(text, 10, 64)
+								bailOnError(err)
+							} else if propSchema.Type == "number" {
+								requestBodyData[propName], err = strconv.ParseFloat(text, 64)
+								bailOnError(err)
+							} else {
+								requestBodyData[propName] = text
+							}
+						}
+					})(propName),
+				)
+			} else {
+				// compound type
+				jsonBytes, err := propSchema.MarshalJSON()
+				bailOnError(err)
+				reflowedJsonString := reflowJsonString(string(jsonBytes))
+				numLines := strings.Count(reflowedJsonString, "\n") + 1
+				form.AddTextView(
+					fmt.Sprintf("%s (%s)\n", propName, propSchema.Type),
+					reflowedJsonString,
+					0, numLines, true, true)
+				form.AddTextArea(
+					"",
+					"",
+					0,
+					0,
+					0,
+					(func(propName string) func(text string) {
+						return func(text string) {
+							requestBodyData[propName] = text
+						}
+					})(propName),
+				)
 			}
+
 		}
 
-	})
-	form.AddButton("Cancel", func() {
-		app.Stop()
-	})
+		form.AddButton("Send", func() {
+			app.Stop()
 
-	form.SetBorder(true).SetTitle(
-		pathAndPathItem.AsFuzzyEntry(),
-	).SetTitleAlign(tview.AlignLeft)
+			// postprocessing: coerce compound values
+			for propName, propSchemaRef := range properties {
+				propSchema := propSchemaRef.Value
+				if propSchema.Type == "object" || propSchema.Type == "array" {
+					requestBodyData[propName] = parseJson(requestBodyData[propName].(string))
+				}
+			}
 
-	if err := app.SetRoot(form, true).EnableMouse(true).Run(); err != nil {
-		panic(err)
+			runCurlCommand(remoteHostOrigin, pathAndPathItem, requestBodyData)
+		})
+		form.AddButton("Cancel", func() {
+			app.Stop()
+		})
+
+		form.SetBorder(true).SetTitle(
+			pathAndPathItem.AsFuzzyEntry(),
+		).SetTitleAlign(tview.AlignLeft)
+
+		if err := app.SetRoot(form, true).EnableMouse(true).Run(); err != nil {
+			panic(err)
+		}
 	}
 }
