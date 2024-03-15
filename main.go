@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/getkin/kin-openapi/openapi3"
@@ -47,6 +50,27 @@ func bailOnError(err error) {
 	}
 }
 
+func tryConnect(url string) bool {
+	client := http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			Dial: (&net.Dialer{
+				Timeout: 5 * time.Second,
+			}).Dial,
+			TLSHandshakeTimeout: 5 * time.Second,
+		},
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Println("Error connecting to:", url, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	return true
+}
+
 func main() {
 
 	if len(os.Args) < 2 {
@@ -60,16 +84,31 @@ func main() {
 	// Load the OpenAPI spec
 	loader := openapi3.NewLoader()
 	var doc *openapi3.T
-	var err error
 
-	// detect if specPath is a URL
-	if strings.HasPrefix(specPath, "http") {
-		// if specPath doesn't end in .json, append openapi.json to it
+	// detect if specPath is a file that exists
+	if _, err := os.Stat(specPath); err == nil {
+		doc, err = loader.LoadFromFile(specPath)
+		bailOnError(err)
+	} else {
+		// assume URL
 		var loadUrl string
+
+		if !strings.HasPrefix(specPath, "http") {
+			// attempt to discover the protocol
+			if tryConnect("https://" + specPath) {
+				fmt.Println("HTTPS is available.")
+				loadUrl = "https://" + specPath
+			} else if tryConnect("http://" + specPath) {
+				fmt.Println("HTTP is available.")
+				loadUrl = "http://" + specPath
+			} else {
+				fmt.Println("don't know how to handle", specPath, "as a URL")
+			}
+		}
+
+		// if specPath doesn't end in .json, append openapi.json to it
 		if !strings.HasSuffix(specPath, ".json") {
-			loadUrl = fmt.Sprintf("%s/openapi.json", specPath)
-		} else {
-			loadUrl = specPath
+			loadUrl = fmt.Sprintf("%s/openapi.json", loadUrl)
 		}
 
 		parsedURL, err := url.Parse(loadUrl)
@@ -85,9 +124,6 @@ func main() {
 			fmt.Printf("Error loading OpenAPI spec: %v\n", err)
 			os.Exit(1)
 		}
-	} else {
-		doc, err = loader.LoadFromFile(specPath)
-		bailOnError(err)
 	}
 
 	// Generate options for the fuzzy finder
