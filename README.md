@@ -14,4 +14,4 @@ oarsman http://your-server.local/openapi.json  # if the URL does not end in .jso
 
 this launches a fuzzy finder, then a tview input form to input arguments
 
-[![asciicast](https://asciinema.org/a/ZEb8QfLs9e69hMsXbKQ4ZYFsO.svg)](https://asciinema.org/a/ZEb8QfLs9e69hMsXbKQ4ZYFsO)
+[![asciicast](https://asciinema.org/a/653775.svg)](https://asciinema.org/a/653775)
