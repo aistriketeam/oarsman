@@ -152,8 +152,8 @@ func main() {
 					continue
 				}
 
-				// only handle POST requests for now
-				if method != "POST" {
+				// only handle POST and GET requests for now
+				if method != "POST" && method != "GET" {
 					continue
 				}
 
@@ -250,8 +250,8 @@ func runCurlCommand(remoteHostOrigin string, pathAndPathItem *PathAndPathItem, r
 
 func sendUserRequest(remoteHostOrigin string, pathAndPathItem *PathAndPathItem) {
 
-	if pathAndPathItem.Method != "POST" {
-		fmt.Println("Only POST requests are supported now.")
+	if pathAndPathItem.Method != "POST" && pathAndPathItem.Method != "GET" {
+		fmt.Println("Only GET/POST requests are supported now.")
 		return
 	}
 
