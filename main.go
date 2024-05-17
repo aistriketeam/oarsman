@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -167,6 +168,10 @@ func main() {
 		}
 	}
 
+	sort.Slice(options, func(i, j int) bool {
+		return options[i].Path > options[j].Path
+	})
+
 	selectedIndex := fuzzyFind(options)
 	pathAndPathItem := options[selectedIndex]
 	// WARN: this really only works for POST due to the curl construction
@@ -275,8 +280,16 @@ func sendUserRequest(remoteHostOrigin string, pathAndPathItem *PathAndPathItem) 
 		app := tview.NewApplication()
 		form := tview.NewForm()
 
+		// sorted propNames for consistent field ordering
+		propNames := make([]string, 0, len(properties))
+		for propName := range properties {
+			propNames = append(propNames, propName)
+		}
+		sort.Strings(propNames)
+
 		// iterate over the properties and collect them into fields
-		for propName, propSchemaRef := range properties {
+		for _, propName := range propNames {
+			propSchemaRef := properties[propName]
 			propSchema := propSchemaRef.Value
 
 			if propSchema.Type == "string" || propSchema.Type == "integer" || propSchema.Type == "number" || propSchema.Type == "boolean" {
