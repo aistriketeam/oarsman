@@ -6,6 +6,16 @@ a program like `postman` but for people who swim in the command line
 
 currently this is a quick and dirty curl command generator + runner that targets OpenAPI services that accept json payloads via POST.
 
+# running
+
+with [nix](https://nixos.org/) (flakes enabled), run directly without cloning:
+
+```
+nix run github:aistriketeam/oarsman -- http://your-server.local/openapi.json
+```
+
+or build with the included `Makefile` (`make build`).
+
 # example usage
 
 ```
