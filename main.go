@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/gdamore/tcell/v2"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/ktr0731/go-fuzzyfinder"
 	"github.com/rivo/tview"
@@ -28,6 +29,115 @@ type PathAndPathItem struct {
 
 func (p PathAndPathItem) AsFuzzyEntry() string {
 	return fmt.Sprintf("%-8s%s", p.Method, p.Path)
+}
+
+// maxDescriptionLen caps how much summary/description text the preview pane
+// shows. ~400 chars is roughly two sentences; anything longer is truncated.
+const maxDescriptionLen = 400
+
+// pickDescription chooses between an operation's summary and description,
+// preferring whichever length is closest to maxDescriptionLen (i.e. the more
+// informative field that still roughly fits), then truncates the overflow.
+func pickDescription(summary, description string) string {
+	candidates := make([]string, 0, 2)
+	if summary != "" {
+		candidates = append(candidates, summary)
+	}
+	if description != "" {
+		candidates = append(candidates, description)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	dist := func(s string) int {
+		d := len([]rune(s)) - maxDescriptionLen
+		if d < 0 {
+			return -d
+		}
+		return d
+	}
+
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if dist(c) < dist(best) {
+			best = c
+		}
+	}
+
+	runes := []rune(best)
+	if len(runes) > maxDescriptionLen {
+		// reserve one rune for the ellipsis so the total stays within the cap
+		return strings.TrimRight(string(runes[:maxDescriptionLen-1]), " ") + "…"
+	}
+	return best
+}
+
+func (p PathAndPathItem) GetOperation() *openapi3.Operation {
+	switch p.Method {
+	case "GET":
+		return p.PathItem.Get
+	case "POST":
+		return p.PathItem.Post
+	case "PUT":
+		return p.PathItem.Put
+	case "DELETE":
+		return p.PathItem.Delete
+	default:
+		return nil
+	}
+}
+
+// AsPreview renders the right-hand preview pane: the path, a human-readable
+// summary/description when available, and the request-body params with their
+// types (marking optional ones).
+func (p PathAndPathItem) AsPreview() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "PATH: %s", p.Path)
+
+	if op := p.GetOperation(); op != nil {
+		if desc := pickDescription(op.Summary, op.Description); desc != "" {
+			fmt.Fprintf(&b, "\n\n%s", desc)
+		}
+	}
+
+	rb := p.GetRequestBody()
+	if rb == nil || rb.Value == nil {
+		return b.String()
+	}
+	mediaType := rb.Value.Content.Get("application/json")
+	if mediaType == nil || mediaType.Schema == nil || mediaType.Schema.Value == nil {
+		return b.String()
+	}
+	schema := mediaType.Schema.Value
+
+	required := make(map[string]bool, len(schema.Required))
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	if len(propNames) > 0 {
+		fmt.Fprintf(&b, "\n\nParams:")
+		for _, name := range propNames {
+			typ := ""
+			if ps := schema.Properties[name]; ps != nil && ps.Value != nil {
+				typ = ps.Value.Type
+			}
+			optional := ""
+			if !required[name] {
+				optional = " (optional)"
+			}
+			fmt.Fprintf(&b, "\n  %s: %s%s", name, typ, optional)
+		}
+	}
+
+	return b.String()
 }
 
 func (p PathAndPathItem) GetRequestBody() *openapi3.RequestBodyRef {
@@ -94,8 +204,11 @@ func main() {
 		// assume URL
 		var loadUrl string
 
-		if !strings.HasPrefix(specPath, "http") {
-			// attempt to discover the protocol
+		if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
+			// protocol explicitly given; honor it as-is
+			loadUrl = specPath
+		} else {
+			// no protocol given: attempt to discover it (prefer TLS)
 			if tryConnect("https://" + specPath) {
 				fmt.Println("HTTPS is available.")
 				loadUrl = "https://" + specPath
@@ -107,8 +220,8 @@ func main() {
 			}
 		}
 
-		// if specPath doesn't end in .json, append openapi.json to it
-		if !strings.HasSuffix(specPath, ".json") {
+		// if loadUrl doesn't end in .json, append openapi.json to it
+		if !strings.HasSuffix(loadUrl, ".json") {
 			loadUrl = fmt.Sprintf("%s/openapi.json", loadUrl)
 		}
 
@@ -188,7 +301,7 @@ func fuzzyFind(pathAndPathItem []PathAndPathItem) int {
 			if i == -1 {
 				return ""
 			}
-			return fmt.Sprintf("PATH: %s", pathAndPathItem[i].Path)
+			return pathAndPathItem[i].AsPreview()
 		}))
 	if err != nil {
 		log.Fatal(err)
@@ -371,6 +484,28 @@ func sendUserRequest(remoteHostOrigin string, pathAndPathItem *PathAndPathItem) 
 		})
 		form.AddButton("Cancel", func() {
 			app.Stop()
+		})
+
+		// Keyboard conveniences:
+		//   Ctrl+Enter -> jump focus to the Send button
+		//   Esc        -> jump focus to the Cancel button
+		// Note: many terminals deliver Ctrl+Enter as Ctrl+J (LF), so we accept
+		// either that or a genuine Ctrl-modified Enter.
+		form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			switch {
+			case event.Key() == tcell.KeyEscape:
+				if idx := form.GetButtonIndex("Cancel"); idx >= 0 {
+					app.SetFocus(form.GetButton(idx))
+				}
+				return nil
+			case event.Key() == tcell.KeyCtrlJ,
+				event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0:
+				if idx := form.GetButtonIndex("Send"); idx >= 0 {
+					app.SetFocus(form.GetButton(idx))
+				}
+				return nil
+			}
+			return event
 		})
 
 		form.SetBorder(true).SetTitle(
